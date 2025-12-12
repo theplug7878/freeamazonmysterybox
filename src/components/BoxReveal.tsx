@@ -2,7 +2,7 @@
 import { useState } from "react";
 import axios from "axios";
 import { Download, Share2 } from "lucide-react";
-import crypto from "crypto";  // Built-in Node crypto for signing (works client-side via Next.js)
+const crypto = require('crypto-browserify'); // Polyfill for client-side signing
 
 const GROQ_KEY = process.env.NEXT_PUBLIC_GROQ_KEY;
 const ACCESS_KEY = process.env.NEXT_PUBLIC_AMAZON_ACCESS_KEY;
@@ -14,9 +14,9 @@ export function BoxReveal() {
   const [loading, setLoading] = useState(false);
   const [boxId] = useState(Math.random().toString(36).substr(2, 9));
 
-  // Helper: Sign PA API request (AWS SigV4)
-  const signRequest = (method: string, endpoint: string, params: Record<string, string>, service = 'execute-api', region = 'us-east-1') => {
-    const canonicalQuery = Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&');
+  // AWS SigV4 signer for PA API (works client-side)
+  const signRequest = (method: string, endpoint: string, params: Record<string, string>, service = 'AWSECommerceService', region = 'us-east-1') => {
+    const sortedParams = Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&');
     const payloadHash = crypto.createHash('sha256').update('').digest('hex');
     const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
     const datestamp = timestamp.slice(0, 8);
@@ -24,7 +24,7 @@ export function BoxReveal() {
     const credentialScope = `${datestamp}/${region}/${service}/aws4_request`;
     const canonicalHeaders = `host:${endpoint}\nx-amz-date:${timestamp}\n`;
     const signedHeaders = 'host;x-amz-date';
-    const canonicalRequest = `${method}\n/${params.Operation}\n${canonicalQuery}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    const canonicalRequest = `${method}\n${params.Operation ? `/${params.Operation}` : '/'}\n${sortedParams}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
     const stringToSign = `AWS4-HMAC-SHA256\n${timestamp}\n${credentialScope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
 
     let signatureKey = `AWS4${SECRET_KEY}`;
@@ -34,16 +34,13 @@ export function BoxReveal() {
     signatureKey = crypto.createHmac('sha256', signatureKey).update('aws4_request').digest();
     const signature = crypto.createHmac('sha256', signatureKey).update(stringToSign).digest('hex');
 
-    return {
-      url: `https://${endpoint}?${canonicalQuery}&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${ACCESS_KEY}%2F${credentialScope}&X-Amz-Date=${timestamp}&X-Amz-SignedHeaders=${signedHeaders}&X-Amz-Signature=${signature}`,
-      headers: { 'x-api-key': ACCESS_KEY }
-    };
+    const fullQuery = `${sortedParams}&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${encodeURIComponent(ACCESS_KEY)}%2F${credentialScope}&X-Amz-Date=${timestamp}&X-Amz-SignedHeaders=${signedHeaders}&X-Amz-Signature=${signature}`;
+    return `https://${endpoint}/onca/xml?${fullQuery}`;
   };
 
   const openBox = async () => {
     setLoading(true);
     try {
-      // Fetch real trending products via PA API ItemSearch (Best Sellers simulation)
       const categories = ["Electronics", "Beauty", "HomeAndKitchen", "ToysAndGames", "Sports"];
       const randomCategories = categories.sort(() => 0.5 - Math.random()).slice(0, 4);
       const searchResults: any[] = [];
@@ -55,46 +52,44 @@ export function BoxReveal() {
           AWSAccessKeyId: ACCESS_KEY,
           AssociateTag: PARTNER_TAG,
           SearchIndex: category,
-          Keywords: 'bestseller',  // Simulates Best Sellers
+          Keywords: 'bestseller', // Targets trending
           ResponseGroup: 'Medium,Images,Offers,ItemAttributes,Reviews',
           ItemPage: (Math.floor(Math.random() * 3) + 1).toString(),
-          ItemCount: '5'  // 5 per cat = 20 total
+          ItemCount: '5'
         };
 
-        const signed = signRequest('GET', 'webservices.amazon.com', params);
-        const res = await axios.get(signed.url, { headers: signed.headers });
-        if (res.data.ItemSearchResponse?.Items?.Item) {
-          searchResults.push(...res.data.ItemSearchResponse.Items.Item);
-        }
+        const url = signRequest('GET', 'webservices.amazon.com', params);
+        const res = await axios.get(url);
+        const items = res.data.ItemSearchResponse?.Items?.Item || [];
+        searchResults.push(...items);
       }
 
-      // Shuffle
       const shuffledItems = searchResults.sort(() => 0.5 - Math.random()).slice(0, 20);
 
-      // Optional Groq for why_viral
+      // Optional Groq for blurbs
       let whyVirals = Array(20).fill("Trending now!");
       if (GROQ_KEY) {
         try {
-          const res = await axios.post(
+          const titles = shuffledItems.map(i => i.ItemAttributes?.Title).join('; ');
+          const groqRes = await axios.post(
             "https://api.groq.com/openai/v1/chat/completions",
             {
               model: "llama-3.1-8b-instant",
-              messages: [{ role: "user", content: `Short viral reasons (12 words max) for these titles: ${shuffledItems.map(i => i.ItemAttributes?.Title).join('; ')}. JSON array only.` }],
+              messages: [{ role: "user", content: `Short viral reasons (12 words max) for these Amazon titles: ${titles}. JSON array only.` }],
               temperature: 0.8,
             },
             { headers: { Authorization: `Bearer ${GROQ_KEY}` } }
           );
-          whyVirals = JSON.parse(res.data.choices[0].message.content.trim());
+          whyVirals = JSON.parse(groqRes.data.choices[0].message.content.trim());
         } catch (e) { console.log("Groq skipped"); }
       }
 
-      // Format real data
       const formattedProducts = shuffledItems.map((item: any, i: number) => ({
         title: item.ItemAttributes?.Title || "Unknown Item",
-        price: parseFloat(item.Offers?.Offer?.[0]?.Price?.FormattedPrice?.replace('$', '') || "0"),
+        price: parseFloat(item.Offers?.Offer?.[0]?.Price?.FormattedPrice?.replace(/[^0-9.]/g, '') || "0"),
         category: item.ItemAttributes?.ProductGroup || "Uncategorized",
         asin: item.ASIN,
-        image: item.MediumImage?.URL || "/placeholder.jpg",
+        image: item.MediumImage?.URL || "https://via.placeholder.com/300x300?text=Amazon+Product",
         rating: item.CustomerReviews?.AverageRating || "N/A",
         why_viral: whyVirals[i] || "Hot pick!",
       }));
@@ -107,7 +102,17 @@ export function BoxReveal() {
       localStorage.setItem("mysteryBoxes", JSON.stringify(history.slice(0, 50)));
     } catch (e) {
       console.error(e);
-      alert("API error—check Amazon env vars! Refresh and try.");
+      alert("Fetch error—check Amazon env vars in Vercel. Using demo data.");
+      // Fallback demo data for testing
+      setProducts(Array.from({ length: 20 }, (_, i) => ({
+        title: `Demo Product ${i + 1}`,
+        price: (Math.random() * 100 + 10).toFixed(2),
+        category: "Demo",
+        asin: `B00${Math.random().toString(36).substring(2, 8).toUpperCase()}`,
+        image: "https://via.placeholder.com/300x300?text=Demo",
+        rating: "4.5",
+        why_viral: "Viral on TikTok!"
+      })));
     }
     setLoading(false);
   };
@@ -138,10 +143,10 @@ export function BoxReveal() {
             rel="nofollow"
             className="bg-white text-black rounded-2xl overflow-hidden shadow-xl hover:scale-105 transition"
           >
-            <img src={p.image} alt={p.title} className="w-full h-48 object-cover" onError={(e) => { e.currentTarget.src = '/placeholder.jpg'; }} />
+            <img src={p.image} alt={p.title} className="w-full h-48 object-cover" onError={(e) => { e.currentTarget.src = "https://via.placeholder.com/300x300?text=No+Image"; }} />
             <div className="p-4">
               <h3 className="font-bold text-sm line-clamp-2">{p.title}</h3>
-              <p className="text-2xl font-bold text-green-600">${p.price.toFixed(2)}</p>
+              <p className="text-2xl font-bold text-green-600">${p.price}</p>
               <p className="text-yellow-500 text-sm">★ {p.rating}</p>
               <p className="text-xs text-gray-600 mt-1">{p.why_viral}</p>
             </div>
