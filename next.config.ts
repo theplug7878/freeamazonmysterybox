@@ -1,18 +1,18 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  experimental: {
+    turbopack: false,  // Key fix: Disable Turbopack, use Webpack
+  },
   webpack: (config, { isServer }) => {
-    // Disable AMD loader for client-side (fixes ApiClient error)
-    if (!isServer) {
+    if (isServer) {  // Apply AMD fix only server-side (no client bundling issues)
       config.module.rules.push({
         test: /\.js$/,
-        exclude: /node_modules\/(paapi5-nodejs-sdk)/, // Target only this SDK
+        exclude: /node_modules\/(paapi5-nodejs-sdk)/,
         use: {
           loader: 'babel-loader',
           options: {
             presets: ['next/babel'],
-            parser: {
-              amd: false, // Key fix: Disable AMD parsing
-            },
+            parser: { amd: false },
           },
         },
       });

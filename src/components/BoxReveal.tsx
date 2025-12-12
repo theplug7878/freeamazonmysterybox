@@ -2,7 +2,7 @@
 import { useState } from "react";
 import axios from "axios";
 import { Download, Share2 } from "lucide-react";
-import * as ProductAdvertisingAPIv1 from 'paapi5-nodejs-sdk'; // Official SDK import
+import crypto from "crypto";  // Built-in Node crypto for signing (works client-side via Next.js)
 
 const GROQ_KEY = process.env.NEXT_PUBLIC_GROQ_KEY;
 const ACCESS_KEY = process.env.NEXT_PUBLIC_AMAZON_ACCESS_KEY;
@@ -14,52 +14,64 @@ export function BoxReveal() {
   const [loading, setLoading] = useState(false);
   const [boxId] = useState(Math.random().toString(36).substr(2, 9));
 
+  // Helper: Sign PA API request (AWS SigV4)
+  const signRequest = (method: string, endpoint: string, params: Record<string, string>, service = 'execute-api', region = 'us-east-1') => {
+    const canonicalQuery = Object.keys(params).sort().map(k => `${k}=${encodeURIComponent(params[k])}`).join('&');
+    const payloadHash = crypto.createHash('sha256').update('').digest('hex');
+    const timestamp = new Date().toISOString().replace(/[:-]|\.\d{3}/g, '');
+    const datestamp = timestamp.slice(0, 8);
+
+    const credentialScope = `${datestamp}/${region}/${service}/aws4_request`;
+    const canonicalHeaders = `host:${endpoint}\nx-amz-date:${timestamp}\n`;
+    const signedHeaders = 'host;x-amz-date';
+    const canonicalRequest = `${method}\n/${params.Operation}\n${canonicalQuery}\n${canonicalHeaders}\n${signedHeaders}\n${payloadHash}`;
+    const stringToSign = `AWS4-HMAC-SHA256\n${timestamp}\n${credentialScope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
+
+    let signatureKey = `AWS4${SECRET_KEY}`;
+    signatureKey = crypto.createHmac('sha256', signatureKey).update(datestamp).digest();
+    signatureKey = crypto.createHmac('sha256', signatureKey).update(region).digest();
+    signatureKey = crypto.createHmac('sha256', signatureKey).update(service).digest();
+    signatureKey = crypto.createHmac('sha256', signatureKey).update('aws4_request').digest();
+    const signature = crypto.createHmac('sha256', signatureKey).update(stringToSign).digest('hex');
+
+    return {
+      url: `https://${endpoint}?${canonicalQuery}&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${ACCESS_KEY}%2F${credentialScope}&X-Amz-Date=${timestamp}&X-Amz-SignedHeaders=${signedHeaders}&X-Amz-Signature=${signature}`,
+      headers: { 'x-api-key': ACCESS_KEY }
+    };
+  };
+
   const openBox = async () => {
     setLoading(true);
     try {
-      // Step 1: Setup official PA API client
-      const defaultClient = ProductAdvertisingAPIv1.ApiClient.instance;
-      defaultClient.accessKey = ACCESS_KEY;
-      defaultClient.secretKey = SECRET_KEY;
-      defaultClient.host = 'webservices.amazon.com';
-      defaultClient.region = 'us-east-1'; // US marketplace
-
-      const api = new ProductAdvertisingAPIv1.DefaultApi();
-
-      // Categories for mystery mix
-      const categories = [
-        "Electronics", "Beauty", "HomeAndKitchen", "ToysAndGames", "SportsAndOutdoors",
-        "Books", "Clothing", "HealthAndPersonalCare", "Grocery", "OfficeProducts"
-      ];
-      const randomCategories = categories.sort(() => 0.5 - Math.random()).slice(0, 4); // 4 random cats
-
+      // Fetch real trending products via PA API ItemSearch (Best Sellers simulation)
+      const categories = ["Electronics", "Beauty", "HomeAndKitchen", "ToysAndGames", "Sports"];
+      const randomCategories = categories.sort(() => 0.5 - Math.random()).slice(0, 4);
       const searchResults: any[] = [];
-      for (const category of randomCategories) {
-        const searchItemsRequest = new ProductAdvertisingAPIv1.SearchItemsRequest();
-        searchItemsRequest['PartnerTag'] = PARTNER_TAG;
-        searchItemsRequest['PartnerType'] = 'Associates';
-        searchItemsRequest['Marketplace'] = 'www.amazon.com';
-        searchItemsRequest['SearchIndex'] = category;
-        searchItemsRequest['Resources'] = [
-          'ItemInfo.Title',
-          'Images.Primary.Medium',
-          'Offers.Listings.Price',
-          'ItemInfo.Classifications',
-          'CustomerReviews.StarRating'
-        ];
-        searchItemsRequest['ItemCount'] = '5'; // 5 per cat = 20 total
-        searchItemsRequest['ItemPage'] = (Math.floor(Math.random() * 3) + 1).toString(); // Random page
 
-        const result = await api.searchItems(searchItemsRequest);
-        if (result.SearchResult && result.SearchResult.Items) {
-          searchResults.push(...result.SearchResult.Items);
+      for (const category of randomCategories) {
+        const params = {
+          Service: 'AWSECommerceService',
+          Operation: 'ItemSearch',
+          AWSAccessKeyId: ACCESS_KEY,
+          AssociateTag: PARTNER_TAG,
+          SearchIndex: category,
+          Keywords: 'bestseller',  // Simulates Best Sellers
+          ResponseGroup: 'Medium,Images,Offers,ItemAttributes,Reviews',
+          ItemPage: (Math.floor(Math.random() * 3) + 1).toString(),
+          ItemCount: '5'  // 5 per cat = 20 total
+        };
+
+        const signed = signRequest('GET', 'webservices.amazon.com', params);
+        const res = await axios.get(signed.url, { headers: signed.headers });
+        if (res.data.ItemSearchResponse?.Items?.Item) {
+          searchResults.push(...res.data.ItemSearchResponse.Items.Item);
         }
       }
 
-      // Shuffle for randomness
+      // Shuffle
       const shuffledItems = searchResults.sort(() => 0.5 - Math.random()).slice(0, 20);
 
-      // Step 2: Optional Groq for "why_viral" (fun blurbs)
+      // Optional Groq for why_viral
       let whyVirals = Array(20).fill("Trending now!");
       if (GROQ_KEY) {
         try {
@@ -67,29 +79,24 @@ export function BoxReveal() {
             "https://api.groq.com/openai/v1/chat/completions",
             {
               model: "llama-3.1-8b-instant",
-              messages: [{
-                role: "user",
-                content: `For these 20 Amazon product titles, give short (max 12 words) "why viral" reasons. Output ONLY JSON array of strings: ${shuffledItems.map(i => i.ItemInfo.Title.DisplayValue).join('; ')}. Format as valid JSON only.`
-              }],
+              messages: [{ role: "user", content: `Short viral reasons (12 words max) for these titles: ${shuffledItems.map(i => i.ItemAttributes?.Title).join('; ')}. JSON array only.` }],
               temperature: 0.8,
             },
             { headers: { Authorization: `Bearer ${GROQ_KEY}` } }
           );
           whyVirals = JSON.parse(res.data.choices[0].message.content.trim());
-        } catch (e) {
-          console.log("Groq optional—using defaults");
-        }
+        } catch (e) { console.log("Groq skipped"); }
       }
 
-      // Step 3: Format with real data
+      // Format real data
       const formattedProducts = shuffledItems.map((item: any, i: number) => ({
-        title: item.ItemInfo.Title.DisplayValue,
-        price: parseFloat(item.Offers?.Listings?.[0]?.Price?.Amount || "0"),
-        category: item.ItemInfo.Classifications?.[0]?.Classification?.DisplayValue || "Uncategorized",
+        title: item.ItemAttributes?.Title || "Unknown Item",
+        price: parseFloat(item.Offers?.Offer?.[0]?.Price?.FormattedPrice?.replace('$', '') || "0"),
+        category: item.ItemAttributes?.ProductGroup || "Uncategorized",
         asin: item.ASIN,
-        image: item.Images?.Primary?.Medium?.URL || "/placeholder.jpg",
-        rating: item.CustomerReviews?.StarRating?.DisplayValue || "N/A",
-        why_viral: whyVirals[i] || "Hot pick this week!",
+        image: item.MediumImage?.URL || "/placeholder.jpg",
+        rating: item.CustomerReviews?.AverageRating || "N/A",
+        why_viral: whyVirals[i] || "Hot pick!",
       }));
 
       setProducts(formattedProducts);
@@ -100,7 +107,7 @@ export function BoxReveal() {
       localStorage.setItem("mysteryBoxes", JSON.stringify(history.slice(0, 50)));
     } catch (e) {
       console.error(e);
-      alert("API fetch error—check Amazon keys in Vercel! (Or refresh.)");
+      alert("API error—check Amazon env vars! Refresh and try.");
     }
     setLoading(false);
   };
@@ -117,8 +124,7 @@ export function BoxReveal() {
     );
   }
 
-  const affiliateLink = (asin: string) =>
-    `https://www.amazon.com/dp/${asin}?tag=${PARTNER_TAG}`;
+  const affiliateLink = (asin: string) => `https://www.amazon.com/dp/${asin}?tag=${PARTNER_TAG}`;
 
   return (
     <div className="max-w-7xl mx-auto">
@@ -158,9 +164,7 @@ export function BoxReveal() {
         </button>
       </div>
 
-      <p className="mt-10 text-xl">
-        Share: freeamazonmysterybox.com/box/{boxId}
-      </p>
+      <p className="mt-10 text-xl">Share: freeamazonmysterybox.com/box/{boxId}</p>
     </div>
   );
 }
