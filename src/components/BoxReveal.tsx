@@ -54,7 +54,7 @@ export function BoxReveal() {
   }
 
   const affiliateLink = (asin: string) =>
-    `https://www.amazon.com/dp/${asin}?tag=YOURTAG-20`;
+    `https://www.amazon.com/dp/${asin}?tag=freeamazonmysterybox-20`;
 
   return (
     <div className="max-w-7xl mx-auto">
