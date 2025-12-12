@@ -1,9 +1,9 @@
+// next.config.ts
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  experimental: {
-    turbopack: false,
-  },
+  // This is the official way in Next.js 16 to disable Turbopack
+  // (no more experimental.turbopack)
   webpack: (config, { isServer }) => {
     if (isServer) {
       config.module.rules.push({
