@@ -16,10 +16,10 @@ export function BoxReveal() {
       const res = await axios.post(
         "https://api.groq.com/openai/v1/chat/completions",
         {
-          model: "llama-3.1-70b-instant",
+          model: "llama-3.1-70b-versatile",
           messages: [{
             role: "user",
-            content: `Give me exactly 20 trending, viral, or bestselling Amazon products right now (December 2025). 
+            content: `Give me exactly 20 trending, viral, or bestselling Amazon products right now. 
             Return ONLY a JSON array with objects containing: title, price (number), category, asin (10-char string), why_viral (max 12 words).
             Mix categories: tech, beauty, home, toys, etc. Include some expensive jackpot items. No extra text.`
           }],
