@@ -1,17 +1,18 @@
-/** @type {import('next').NextConfig} */
-const nextConfig = {
+import type { NextConfig } from "next";
+
+const nextConfig: NextConfig = {
   experimental: {
-    turbopack: false,  // Key fix: Disable Turbopack, use Webpack
+    turbopack: false,
   },
   webpack: (config, { isServer }) => {
-    if (isServer) {  // Apply AMD fix only server-side (no client bundling issues)
+    if (isServer) {
       config.module.rules.push({
         test: /\.js$/,
-        exclude: /node_modules\/(paapi5-nodejs-sdk)/,
+        include: /node_modules/,
         use: {
-          loader: 'babel-loader',
+          loader: "babel-loader",
           options: {
-            presets: ['next/babel'],
+            presets: ["next/babel"],
             parser: { amd: false },
           },
         },
@@ -21,4 +22,4 @@ const nextConfig = {
   },
 };
 
-module.exports = nextConfig;
+export default nextConfig;
